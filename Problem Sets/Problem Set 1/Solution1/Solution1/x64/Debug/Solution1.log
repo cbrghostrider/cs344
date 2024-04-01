@@ -1,0 +1,10 @@
+﻿  main.cpp
+C:\Users\soura\Documents\GitHub\cs344\Problem Sets\Problem Set 1\HW1.cpp(65,36): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+  (compiling source file '../main.cpp')
+  
+C:\Users\soura\Documents\GitHub\cs344\Problem Sets\Problem Set 1\HW1.cpp(65,25): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+  (compiling source file '../main.cpp')
+  
+     Creating library C:\Users\soura\Documents\GitHub\cs344\Problem Sets\Problem Set 1\Solution1\x64\Debug\Solution1.lib and object C:\Users\soura\Documents\GitHub\cs344\Problem Sets\Problem Set 1\Solution1\x64\Debug\Solution1.exp
+LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs; use /NODEFAULTLIB:library
+  Solution1.vcxproj -> C:\Users\soura\Documents\GitHub\cs344\Problem Sets\Problem Set 1\Solution1\x64\Debug\Solution1.exe
