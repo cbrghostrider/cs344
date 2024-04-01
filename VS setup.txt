@@ -1,5 +1,8 @@
 First install OpenCV from the instructions on the web.
 
+----------------
+In the windows system env variables add the dll to the path (both user and system)
+
 ---------------
 Project Properties:
 C++ -> General -> Additional Include Directories -> <include path here> e.g. C:\opencv\build\include
