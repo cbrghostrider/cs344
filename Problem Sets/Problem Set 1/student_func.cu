@@ -50,6 +50,36 @@ void rgba_to_greyscale(const uchar4* const rgbaImage,
   //First create a mapping from the 2D block and grid locations
   //to an absolute 2D location in the image, then use that to
   //calculate a 1D offset
+
+    // Instead of doing what the assignment asks, and converting it into a 2D index, 
+    // I convert it directly into a 1-D index. This is easier for me to understand.
+    // 
+    // Imagine the entire image laid out in row-major format. 
+    // So one row after the other is laid out linearly in memory.
+    // 
+    // Similarly imagine the blocks and grids laid out linearly. 
+    // Each block consists of blockDim.x * blockDim.y threads.
+    // Each grid consists of gridDim.x * gridDim.y blocks.
+    // Now we take these cuda variables and map them into an "element_offset",
+    // which is the element number, linearly determined.
+    // 
+    // This same "element number" is basically the offset in the row-major layout
+    // of the input (color) and output (grayscale) images.
+
+    int block_offset = threadIdx.y * blockDim.x + threadIdx.x;
+    int grid_offset = blockIdx.y * gridDim.x + blockIdx.x;
+    int block_size = blockDim.x * blockDim.y;
+    int element_offset = block_offset + grid_offset * block_size;
+
+    if (element_offset < numRows * numCols) {
+        const uchar4* const d_in = &rgbaImage[element_offset];
+        unsigned char* const d_out = &greyImage[element_offset];
+
+        float grey_val = 0.299f * d_in->x + 0.587f * d_in->y + 0.114f * d_in->z;
+        unsigned char value = (unsigned char)grey_val;
+        *d_out = value;
+    }
+
 }
 
 void your_rgba_to_greyscale(const uchar4 * const h_rgbaImage, uchar4 * const d_rgbaImage,
@@ -57,8 +87,9 @@ void your_rgba_to_greyscale(const uchar4 * const h_rgbaImage, uchar4 * const d_r
 {
   //You must fill in the correct sizes for the blockSize and gridSize
   //currently only one block with one thread is being launched
-  const dim3 blockSize(1, 1, 1);  //TODO
-  const dim3 gridSize( 1, 1, 1);  //TODO
+  const dim3 blockSize(128, 8, 1);  
+  const dim3 gridSize(numRows / 128 + 1, numCols / 8 + 1, 1);  
+
   rgba_to_greyscale<<<gridSize, blockSize>>>(d_rgbaImage, d_greyImage, numRows, numCols);
   
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
