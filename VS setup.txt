@@ -1,0 +1,21 @@
+First install OpenCV from the instructions on the web.
+
+---------------
+Project Properties:
+C++ -> General -> Additional Include Directories -> <include path here> e.g. C:\opencv\build\include
+Linker -> General -> Additional Library Directories -> <lib path here> e.g. C:\opencv\build\x64\vc16\lib
+Linker -> Input -> Additional Dependencies -> <dll name here> e.g. opencv_world490d.lib
+
+-------
+
+Some constants have been deprecated. Google the names and change to the corresponding cv::<name>
+e.g. cv::IMREAD_GRAYSCALE, cv::IMREAD_COLOR, etc.
+
+
+------------
+
+For some reason, HW1.cpp is included in main.cpp! 
+Therefore in the solution/project, don't add this as an existing item.
+------------
+
+After these changes, the solution should build.
