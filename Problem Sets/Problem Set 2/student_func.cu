@@ -131,8 +131,9 @@ void gaussian_blur(const unsigned char* const inputChannel,
    float values[9][9];
    const int delta = filterWidth / 2;  
 
-   for (int xdelta = absolute_image_position_x - delta, xvi=0; xdelta <= absolute_image_position_x + delta; xdelta++, xvi++) {
-       for (int ydelta = absolute_image_position_y - delta, yvi = 0; ydelta <= absolute_image_position_y + delta; ydelta++, yvi++) {
+   
+   for (int ydelta = absolute_image_position_y - delta, yvi = 0; ydelta <= absolute_image_position_y + delta; ydelta++, yvi++) {
+       for (int xdelta = absolute_image_position_x - delta, xvi = 0; xdelta <= absolute_image_position_x + delta; xdelta++, xvi++) {
                       
            int xdelta_new = min(max(0, xdelta), numCols - 1);
            int ydelta_new = min(max(0, ydelta), numRows - 1);
@@ -149,8 +150,8 @@ void gaussian_blur(const unsigned char* const inputChannel,
 
    // Now that all threads have read inputs, compute the output value and write it.
    float answer = 0.0f;
-   for (int xvi = 0; xvi < filterWidth; xvi++) {
-       for (int yvi = 0; yvi < filterWidth; yvi++) {
+   for (int yvi = 0; yvi < filterWidth; yvi++) {
+       for (int xvi = 0; xvi < filterWidth; xvi++) {       
            answer += filter[yvi * filterWidth + xvi] * values[yvi][xvi];
        }
    }
