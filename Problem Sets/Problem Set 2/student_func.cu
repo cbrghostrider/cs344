@@ -138,10 +138,7 @@ void gaussian_blur(const unsigned char* const inputChannel,
            int ydelta_new = min(max(0, ydelta), numRows - 1);
            int input_index = ydelta_new * numCols + xdelta_new;
 
-           if (xvi < 0 || xvi >=9 || yvi < 0 || yvi >=9) {
-               printf("Wrong! xvi=%d, yvi=%d\n", xvi, yvi);
-           }
-           values[xvi][yvi] = inputChannel[input_index];
+           values[yvi][xvi] = (float)(inputChannel[input_index]);
 
        }
    }
@@ -154,7 +151,7 @@ void gaussian_blur(const unsigned char* const inputChannel,
    float answer = 0.0f;
    for (int xvi = 0; xvi < filterWidth; xvi++) {
        for (int yvi = 0; yvi < filterWidth; yvi++) {
-           answer += filter[yvi * filterWidth + xvi] * values[xvi][yvi];
+           answer += filter[yvi * filterWidth + xvi] * values[yvi][xvi];
        }
    }
    int output_index = absolute_image_position_y * numCols + absolute_image_position_x;
