@@ -129,27 +129,20 @@ void gaussian_blur(const unsigned char* const inputChannel,
    // First read all the inputs required.
    // assumes filterWidth is an odd number, which is indeed the case in the code.
    float values[9][9];
-   int delta = filterWidth / 2;  
+   const int delta = filterWidth / 2;  
+
    for (int xdelta = absolute_image_position_x - delta, xvi=0; xdelta <= absolute_image_position_x + delta; xdelta++, xvi++) {
        for (int ydelta = absolute_image_position_y - delta, yvi = 0; ydelta <= absolute_image_position_y + delta; ydelta++, yvi++) {
                       
-           /*if (xdelta < 0) xdelta = 0;
-           if (xdelta >= numCols) xdelta = numCols - 1;
-           if (ydelta < 0) ydelta = 0;
-           if (ydelta >= numRows) ydelta = numRows - 1;
-           if (xdelta < 0 || xdelta >= numCols || ydelta < 0 || ydelta >= numRows) {
-               printf("Writing for row=%d, col=%d\n", ydelta, xdelta);
+           int xdelta_new = min(max(0, xdelta), numCols - 1);
+           int ydelta_new = min(max(0, ydelta), numRows - 1);
+           int input_index = ydelta_new * numCols + xdelta_new;
+
+           if (xvi < 0 || xvi >=9 || yvi < 0 || yvi >=9) {
+               printf("Wrong! xvi=%d, yvi=%d\n", xvi, yvi);
            }
-           int input_index = ydelta * numCols + xdelta;
-           values[xvi][yvi] = inputChannel[input_index];*/
-           
-           if (xdelta < 0 || xdelta >= numCols || ydelta < 0 || ydelta >= numRows) {
-               values[xvi][yvi] = 0.0f;
-           }
-           else {
-               int input_index = ydelta * numCols + xdelta;
-               values[xvi][yvi] = inputChannel[input_index];
-           }
+           values[xvi][yvi] = inputChannel[input_index];
+
        }
    }
 
@@ -284,14 +277,9 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
 
   // Call your convolution kernel here 3 times, once for each color channel.
   gaussian_blur << <gridSize, blockSize >> > (d_red,   d_redBlurred,   numRows, numCols, d_filter, filterWidth);
-  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
   gaussian_blur << <gridSize, blockSize >> > (d_green, d_greenBlurred, numRows, numCols, d_filter, filterWidth);
-  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
   gaussian_blur << <gridSize, blockSize >> > (d_blue,  d_blueBlurred,  numRows, numCols, d_filter, filterWidth);
-  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
+  
   // Again, call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
