@@ -33,6 +33,12 @@ void referenceCalculation(const float* const h_logLuminance, unsigned int* const
     histo[bin]++;
   }
 
+  printf("Host   histogram: [ ");
+  for (int i = 0; i < numBins; i++) {
+      printf("%d ", histo[i]);
+  }
+  printf("]\n-------------------------------------------\n");
+
   //Step 4
   //finally we perform and exclusive scan (prefix sum)
   //on the histogram to get the cumulative distribution

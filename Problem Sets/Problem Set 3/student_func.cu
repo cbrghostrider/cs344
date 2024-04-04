@@ -153,6 +153,44 @@ __global__ void kernel_minMaxReduce(float* const ll_min, float* const ll_max, fl
     }
 }
 
+__global__ void kernel_putIntoBins(const float* const d_ll, const float min_lum, const float range, const size_t numBins, size_t* d_bins, const size_t numRows, const size_t numCols) {
+    // Shared memory accumulates histogram for each block.
+    extern __shared__ size_t my_bins[];
+
+    int absolute_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int absolute_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (absolute_x >= numCols || absolute_y >= numRows) {
+        return;
+    }
+
+    int index = absolute_y * numCols + absolute_x;    
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+
+    // First initialize the shared memory.
+    if (tid == 0) {
+        for (int i = 0; i < numBins; i++) {
+            my_bins[i] = 0;
+        }
+    }
+    __syncthreads();
+
+    // Find out which bin my element must go into.
+    float my_luminance = d_ll[index];
+    int my_bin = static_cast<int>(((my_luminance - min_lum) * numBins) / range);
+    my_bin = min(my_bin, static_cast<int>(numBins) - 1);  // clamp
+
+    atomicAdd(&my_bins[my_bin], 1);
+
+    __syncthreads();
+
+    // Now accumulate globally.
+    if (tid == 0) {
+        for (int i = 0; i < numBins; i++) {
+            atomicAdd(&d_bins[i], my_bins[i]);
+        }        
+    }
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -177,7 +215,11 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     const dim3 blocks(THREAD_X, THREAD_Y, 1);
     const dim3 grid(numCols / THREAD_X + 1, numRows / THREAD_Y + 1, 1);
 
-    float* d_min, * d_max;    
+
+    //
+    // STEP 1: 
+    //
+    float* d_min, * d_max;
     checkCudaErrors(cudaMalloc(&d_min, sizeof(float)));
     checkCudaErrors(cudaMalloc(&d_max, sizeof(float)));
     checkCudaErrors(cudaMemset(d_min, 0, sizeof(float)));
@@ -202,4 +244,33 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     checkCudaErrors(cudaFree(d_max));
     checkCudaErrors(cudaFree(d_ll_min));
     checkCudaErrors(cudaFree(d_ll_max));
+
+    //
+    // STEP 2:
+    //
+    float range = max_logLum - min_logLum;
+
+    //
+    // STEP3:
+    //
+    size_t* d_bins;
+    checkCudaErrors(cudaMalloc(&d_bins, sizeof(size_t) * numBins));
+    checkCudaErrors(cudaMemset(d_bins, 0, sizeof(size_t) * numBins));
+
+    // Create a histogram in parallel.
+    kernel_putIntoBins<<<blocks, grid, sizeof(size_t)*numBins >> >(d_logLuminance, min_logLum, range, numBins, d_bins, numRows, numCols);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    size_t* h_bins = static_cast<size_t*>(malloc(sizeof(size_t)*numBins));
+    checkCudaErrors(cudaMemcpy(h_bins, d_bins, sizeof(size_t)*numBins, cudaMemcpyDeviceToHost));
+    printf("Device histogram: [ ");
+    for (int i = 0; i < numBins; i++) {
+        printf("%d ", h_bins[i]);
+    }
+    printf("]\n-------------------------------------------\n");
+    free(h_bins);
+
+
+    // Later...
+    checkCudaErrors(cudaFree(d_bins));
 }
