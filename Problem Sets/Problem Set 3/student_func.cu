@@ -81,6 +81,78 @@
 
 #include "utils.h"
 
+// CUDA doesn't have atomicMax for non-integers.
+// This function taken from stack overflow!
+__device__ static float atomicMaxFloat(float* address, float val)
+{
+    int* address_as_i = (int*)address;
+    int old = *address_as_i, assumed;
+    do {
+        assumed = old;
+        old = ::atomicCAS(address_as_i, assumed,
+            __float_as_int(::fmaxf(val, __int_as_float(assumed))));
+    } while (assumed != old);
+    return __int_as_float(old);
+}
+
+// CUDA doesn't have atomicMin for non-integers.
+// This function taken from stack overflow!
+__device__ static float atomicMinFloat(float* address, float val)
+{
+    int* address_as_i = (int*)address;
+    int old = *address_as_i, assumed;
+    do {
+        assumed = old;
+        old = ::atomicCAS(address_as_i, assumed,
+            __float_as_int(::fminf(val, __int_as_float(assumed))));
+    } while (assumed != old);
+    return __int_as_float(old);
+}
+
+__global__ void kernel_minMaxReduce(float* const ll_min, float* const ll_max, float* min_logLum, float* max_logLum, const size_t numRows, const size_t numCols) {
+    int absolute_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int absolute_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (absolute_x >= numCols || absolute_y >= numRows) {
+        return;
+    }
+
+    int index = absolute_y * numCols + absolute_x;
+
+    // Block-wide reduction of elements to min and max.
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+
+    for (int loc = blockDim.x * blockDim.y / 2; loc > 0; loc >>= 1) {
+        float rhs_min = 0.0f, rhs_max=0.0f;     
+
+        // Find the absolute location of the rhs.
+        int rhs_x_in_block = (threadIdx.x + loc) % blockDim.x;
+        int rhs_y_in_block = threadIdx.y + ((threadIdx.x + loc) / blockDim.x);
+        int absolute_rhs_x = blockIdx.x * blockDim.x + rhs_x_in_block;
+        int absolute_rhs_y = blockIdx.y * blockDim.y + rhs_y_in_block;
+        int rhs_index = absolute_rhs_y * numCols + absolute_rhs_x;        
+
+        if (tid < loc /* && rhs_index < numRows * numCols */) {
+            rhs_min = ll_min[rhs_index];
+            rhs_max = ll_max[rhs_index];
+        }
+
+        __syncthreads();
+
+        if (tid < loc) {
+            ll_min[index] = min(ll_min[index], rhs_min);
+            ll_max[index] = max(ll_max[index], rhs_max);
+        }
+
+        __syncthreads();
+    }
+
+    // Then use an atomic to reduce the global min and max values.
+    if (tid == 0) {           
+        atomicMinFloat(min_logLum, ll_min[index]);
+        atomicMaxFloat(max_logLum, ll_max[index]);        
+    }
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -100,5 +172,34 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
 
+    const int THREAD_X = 128;
+    const int THREAD_Y = 8;
+    const dim3 blocks(THREAD_X, THREAD_Y, 1);
+    const dim3 grid(numCols / THREAD_X + 1, numRows / THREAD_Y + 1, 1);
 
+    float* d_min, * d_max;    
+    checkCudaErrors(cudaMalloc(&d_min, sizeof(float)));
+    checkCudaErrors(cudaMalloc(&d_max, sizeof(float)));
+    checkCudaErrors(cudaMemset(d_min, 0, sizeof(float)));
+    checkCudaErrors(cudaMemset(d_max, 0, sizeof(float)));
+
+    float* d_ll_min, * d_ll_max;    
+    checkCudaErrors(cudaMalloc(&d_ll_min, sizeof(float) * numRows * numCols));
+    checkCudaErrors(cudaMalloc(&d_ll_max, sizeof(float) * numRows * numCols));
+    checkCudaErrors(cudaMemcpy(d_ll_min, d_logLuminance, sizeof(float) * numRows * numCols, cudaMemcpyDeviceToDevice));
+    checkCudaErrors(cudaMemcpy(d_ll_max, d_logLuminance, sizeof(float) * numRows * numCols, cudaMemcpyDeviceToDevice));
+
+    // Find the min and max log luminance values.    
+    kernel_minMaxReduce << <blocks, grid>> > (d_ll_min, d_ll_max, d_min, d_max, numRows, numCols);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    checkCudaErrors(cudaMemcpy(&min_logLum, d_min, sizeof(float), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(&max_logLum, d_max, sizeof(float), cudaMemcpyDeviceToHost));    
+
+    printf("Device found: logLumMin=%4.8f; logLumMax=%4.8f\n", min_logLum, max_logLum);
+
+    checkCudaErrors(cudaFree(d_min));
+    checkCudaErrors(cudaFree(d_max));
+    checkCudaErrors(cudaFree(d_ll_min));
+    checkCudaErrors(cudaFree(d_ll_max));
 }

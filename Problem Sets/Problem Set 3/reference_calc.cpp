@@ -15,6 +15,8 @@ void referenceCalculation(const float* const h_logLuminance, unsigned int* const
     logLumMax = std::max(h_logLuminance[i], logLumMax);
   }
 
+  printf("Host found: logLumMin=%4.8f; logLumMax=%4.8f\n", logLumMin, logLumMax);
+
   //Step 2
   float logLumRange = logLumMax - logLumMin;
 
