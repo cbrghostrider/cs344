@@ -153,9 +153,9 @@ __global__ void kernel_minMaxReduce(float* const ll_min, float* const ll_max, fl
     }
 }
 
-__global__ void kernel_putIntoBins(const float* const d_ll, const float min_lum, const float range, const size_t numBins, size_t* d_bins, const size_t numRows, const size_t numCols) {
+__global__ void kernel_putIntoBins(const float* const d_ll, const float min_lum, const float range, const size_t numBins, unsigned int* d_bins, const size_t numRows, const size_t numCols) {
     // Shared memory accumulates histogram for each block.
-    extern __shared__ size_t my_bins[];
+    extern __shared__ unsigned int my_bins[];
 
     int absolute_x = blockIdx.x * blockDim.x + threadIdx.x;
     int absolute_y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -188,6 +188,39 @@ __global__ void kernel_putIntoBins(const float* const d_ll, const float min_lum,
         for (int i = 0; i < numBins; i++) {
             atomicAdd(&d_bins[i], my_bins[i]);
         }        
+    }
+}
+
+__global__ void naiveParallelExclusiveScan(unsigned int* const d_cdf, const size_t numBins) {
+    int tid = threadIdx.x;
+    
+    // First get the inclusive scan.
+    for (int delta = 1; delta < numBins; delta <<= 1) {
+        int target = tid + delta;
+
+        unsigned int lhsVal = 0;
+        unsigned int rhsVal = 0;
+        if (target < numBins) {
+            lhsVal = d_cdf[tid];
+            rhsVal = d_cdf[target];
+        }
+        __syncthreads();
+
+        if (target < numBins) {
+            d_cdf[target] = lhsVal + rhsVal;
+        }
+        __syncthreads();
+    }
+
+    // Now get the exclusive scan.
+    unsigned int val = d_cdf[tid];
+    __syncthreads();
+    if (tid == 0) {
+        d_cdf[0] = 0;
+    }
+    __syncthreads();
+    if (tid + 1 < numBins) {
+        d_cdf[tid + 1] = val;
     }
 }
 
@@ -253,16 +286,16 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     //
     // STEP3:
     //
-    size_t* d_bins;
-    checkCudaErrors(cudaMalloc(&d_bins, sizeof(size_t) * numBins));
-    checkCudaErrors(cudaMemset(d_bins, 0, sizeof(size_t) * numBins));
+    unsigned int* d_bins;
+    checkCudaErrors(cudaMalloc(&d_bins, sizeof(unsigned int) * numBins));
+    checkCudaErrors(cudaMemset(d_bins, 0, sizeof(unsigned int) * numBins));
 
     // Create a histogram in parallel.
-    kernel_putIntoBins<<<blocks, grid, sizeof(size_t)*numBins >> >(d_logLuminance, min_logLum, range, numBins, d_bins, numRows, numCols);
+    kernel_putIntoBins<<<blocks, grid, sizeof(unsigned int)*numBins >> >(d_logLuminance, min_logLum, range, numBins, d_bins, numRows, numCols);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-    size_t* h_bins = static_cast<size_t*>(malloc(sizeof(size_t)*numBins));
-    checkCudaErrors(cudaMemcpy(h_bins, d_bins, sizeof(size_t)*numBins, cudaMemcpyDeviceToHost));
+    unsigned int* h_bins = static_cast<unsigned int*>(malloc(sizeof(unsigned int)*numBins));
+    checkCudaErrors(cudaMemcpy(h_bins, d_bins, sizeof(unsigned int)*numBins, cudaMemcpyDeviceToHost));
     printf("Device histogram: [ ");
     for (int i = 0; i < numBins; i++) {
         printf("%d ", h_bins[i]);
@@ -270,7 +303,25 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     printf("]\n-------------------------------------------\n");
     free(h_bins);
 
+    //
+    // STEP 4:
+    // 
 
-    // Later...
+    checkCudaErrors(cudaMemcpy(d_cdf, d_bins, sizeof(unsigned int)*numBins, cudaMemcpyDeviceToDevice));
+
+    // Perform the exclusive scan in parallel.
+    naiveParallelExclusiveScan << <1, numBins >> > (d_cdf, numBins);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    unsigned int* h_cdf = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * numBins));
+    checkCudaErrors(cudaMemcpy(h_cdf, d_cdf, sizeof(unsigned int) * numBins, cudaMemcpyDeviceToHost));
+    printf("Device CDF: [ ");
+    for (int i = 0; i < numBins; i++) {
+        printf("%d ", h_cdf[i]);
+    }
+    printf("]\n-------------------------------------------\n");
+    free(h_cdf);
+
+    // Deallocate our remaining memory.
     checkCudaErrors(cudaFree(d_bins));
 }
