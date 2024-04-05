@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
 #include <thrust/copy.h>
 #include <thrust/transform.h>
 #include <thrust/functional.h>
