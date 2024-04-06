@@ -84,9 +84,6 @@ __global__ void predicateKernel(unsigned int pred_cmp, unsigned int pred_mask, u
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
     if (gid < numElems) {
         d_preds[gid] = (((d_in[gid] & pred_mask) == pred_cmp) ? 1 : 0);
-        if (d_preds[gid] != 0 && d_preds[gid] != 1) {
-            printf("Strange pred value!\n"); // FIXME
-        }
     }
 }
 
@@ -104,9 +101,6 @@ __global__ void exclusivePrefixSum(unsigned int *const d_scan, int numElems, uns
     
     // First perform the inclusive prefix sum.
     for (int step_size = 1; step_size < blockDim.x; step_size <<= 1) {
-        if (blockIdx.x == 0 && threadIdx.x == 0) {
-            // printf("step_size=%d \n", step_size); // FIXME
-        }
         unsigned int val_lhs = 0, val_rhs = 0;
         unsigned int block_end = (blockIdx.x + 1) * blockDim.x;
         if (gid + step_size < block_end) { 
@@ -126,8 +120,7 @@ __global__ void exclusivePrefixSum(unsigned int *const d_scan, int numElems, uns
         int read_index = gid + blockDim.x - 1;
         read_index = min(read_index, numElems - 1);  // clamp for the last block!
         int write_index = blockIdx.x;
-        d_interim[write_index] = d_scan[read_index];
-        // if (d_interim[write_index]) printf("d_interim[%d] = %d, numElems=%d\n", blockIdx.x, d_interim[write_index], numElems);  // FIXME
+        d_interim[write_index] = d_scan[read_index];        
     }
     __syncthreads();
 
@@ -138,8 +131,11 @@ __global__ void exclusivePrefixSum(unsigned int *const d_scan, int numElems, uns
     }
     __syncthreads();
     d_scan[gid] = val;
-    if (d_scan[gid] >= numElems && nullptr != d_interim) {
-        printf("[t: %d; b: %d] Unknown scan value: %u, numElems = %d\n", threadIdx.x, blockIdx.x, d_scan[gid], numElems);
+    if (nullptr != d_interim && d_scan[gid] >= numElems) {
+        // printf("exclusive prefix sum: [t: %d; b: %d] Unknown scan value: %u, numElems = %d\n", threadIdx.x, blockIdx.x, d_scan[gid], numElems); // FIXME
+    }
+    if (d_interim == nullptr && d_scan[threadIdx.x] >= numElems*1024) {
+        printf("exclusive prefix sum: [t: %d; b: %d] interim: %u, numElems = %d\n", threadIdx.x, blockIdx.x, d_scan[threadIdx.x], numElems);
     }
     __syncthreads();
     
@@ -152,8 +148,12 @@ __global__ void addScalar(unsigned int* const d_scan, int numElems, unsigned int
         return;
     }
     d_scan[gid] = d_scan[gid] + d_interim[blockIdx.x];
+    if (d_scan[gid] >= numElems) {
+        // printf("addScalar: [t: %d; b: %d] Unknown scan value: %u, interim=%u; numElems = %d\n", threadIdx.x, blockIdx.x, d_scan[gid], d_interim[blockIdx.x], numElems); // FIXME
+    }
 }
 
+// Note this function has been tested.
 // d_histo: The histogram of count of zeroes; bitpos wise.
 // bitpos: The bit position we are dealing with in this iteration.
 // d_in_val and d_in_pos are the inputs.
@@ -177,7 +177,7 @@ __global__ void scatterWithOffsetIfPred(const unsigned int * const d_histo, int 
         printf("[t: %d; b: %d] Unknown pred value: %u\n", threadIdx.x, blockIdx.x, d_preds[gid]);
     }
     if (d_scan[gid] >= numElems) {  // FIXME
-        // printf("[t: %d; b: %d] Unknown scan value: %u\n", threadIdx.x, blockIdx.x, d_scan[gid]);
+        // printf("scatter: [t: %d; b: %d] Unknown scan value: %u\n", threadIdx.x, blockIdx.x, d_scan[gid]); // FIXME
     }
     unsigned int move_to_index = d_scan[gid];
     if (use_offset) {
@@ -195,40 +195,49 @@ __global__ void scatterWithOffsetIfPred(const unsigned int * const d_histo, int 
     // __syncthreads(); // WHY?
 }
 
-//unsigned int h_histogram[32] = { 0 };
+void test_histogram(unsigned int* const d_inputVals, const size_t numElems) {
+    
+    unsigned int* h_vals = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * numElems));
+    checkCudaErrors(cudaMemcpy(h_vals, d_inputVals, sizeof(unsigned int) * numElems, cudaMemcpyDeviceToHost)); 
 
-void compute_host_reference(unsigned int* const d_inputVals,
-    unsigned int* const d_inputPos,
-    unsigned int* const d_outputVals,
-    unsigned int* const d_outputPos,
-    const size_t numElems) {
+    unsigned int histogram[32] = { 0 };
 
-    // Count how many are not in order.
-    /*unsigned int* h_sorted1 = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * numElems));
-    checkCudaErrors(cudaMemcpy(h_sorted1, d_inputVals, sizeof(unsigned int) * numElems, cudaMemcpyDeviceToHost));
-    int count = 0;
-    for (int i = 1; i < numElems; i++) {
-        if (h_sorted1[i - 1] > h_sorted1[i]) {
-            count++;
+    for (int i = 0; i < numElems; i++) {
+        unsigned int val = h_vals[i];
+        for (unsigned int mask = 0x1, bitpos=0; mask != 0; mask <<=1, bitpos++) {
+            if ((val & mask) == 0x0) {
+                histogram[bitpos]++;
+            }
+        }        
+    }
+
+    const int NUM_THREADS = 1024;
+    const int NUM_BLOCKS = numElems / NUM_THREADS + 1;
+    dim3 block(NUM_THREADS);
+    dim3 grid(NUM_BLOCKS);
+     
+    // Histogram counts the number of zeros in each bit position.
+    unsigned int num_bits = sizeof(unsigned int) * 8;
+    unsigned int* d_histo;
+    checkCudaErrors(cudaMalloc(&d_histo, sizeof(unsigned int) * num_bits));
+    checkCudaErrors(cudaMemset(d_histo, 0, sizeof(unsigned int) * num_bits));
+    countZerosByPositions << <block, grid, sizeof(unsigned int)* num_bits >> > (d_inputVals, numElems, d_histo, num_bits);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    unsigned int* h_histogram = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * num_bits));
+    checkCudaErrors(cudaMemcpy(h_histogram, d_histo, sizeof(unsigned int) * num_bits, cudaMemcpyDeviceToHost));
+
+    bool failure = false;
+    for (int i = 0; i < num_bits; i++) {
+        if (h_histogram[i] != histogram[i]) {
+            printf("Test: test_histogram: Mismatch for bucket %d: got %d, want %d\n", i, h_histogram[i], histogram[i]);
+            failure = true;
+            break;
         }
     }
-    printf("Total unsorted on device before: %d\n", count); */
-
-    //for (int i = 0; i < numElems; i++) {
-    //    unsigned int val = h_sorted1[i];
-    //    for (unsigned int mask = 0x1, bitpos=0; mask != 0; mask <<=1, bitpos++) {
-    //        if ((val & mask) == 0x0) {
-    //            h_histogram[bitpos]++;
-    //        }
-    //    }        
-    //}
-    //printf("Host   histo: \n");
-    //for (unsigned int mask = 0x1, bitpos = 0; mask != 0; mask <<= 1, bitpos++) {
-    //    printf("[%d] = %d; \n", bitpos, h_histogram[bitpos]);
-    //}    
-    //printf("\n");
-    // 
-    // free(h_sorted1);
+    printf("Test: test_histogram: Comparing host and device histograms: %s!\n", (failure ? "FAILED":"PASSED"));
+    free(h_histogram);
+    free(h_vals);
 }
 
 void test_exclusiveScan() {
@@ -261,10 +270,9 @@ void test_exclusiveScan() {
             failed = true;
             break;
         }
-    }
-    if (!failed) {
-        printf("Exclusive scan implementation on host vs. device matches for 1M elements!\n");
-    }
+    }    
+    printf("Test: test_exclusiveScan: Exclusive scan implementation on host vs. device for 1M elements: %s!\n", (failed ? "FAILED" : "PASSED"));
+    
 }
 
 void test_predicateKernel() {
@@ -353,12 +361,69 @@ void test_predicateKernel() {
         }
     }
 
-    printf("Collective predicate kernel tests: %s!\n", (failed ? "FAILED" : "PASSED"));
+    printf("Test: test_predicateKernel: Collective predicate kernel tests: %s!\n", (failed ? "FAILED" : "PASSED"));
 
     checkCudaErrors(cudaFree(d_out));
     checkCudaErrors(cudaFree(d_values));
     free(values);
     free(h_out);
+}
+
+void test_scatter() {
+    const int NUM_THREADS = 1024;
+    const int NUM_BLOCKS = 1024;
+    const int NUM_VALUES = NUM_THREADS * NUM_BLOCKS;
+    unsigned int* h_in     = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * NUM_VALUES));
+    unsigned int* h_in_pos = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * NUM_VALUES));
+    unsigned int* h_preds  = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * NUM_VALUES));
+    unsigned int* h_scan   = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * NUM_VALUES));    
+    for (int i = 0; i < NUM_VALUES; i++) {
+        h_in[i] = i;
+        h_in_pos[i] = i;
+        h_preds[i] = 1;
+        h_scan[i] = NUM_VALUES - i - 1;
+    }
+
+    unsigned int* d_in, *d_in_pos, * d_preds, *d_scan, *d_out, *d_out_pos, * d_histo;
+
+    checkCudaErrors(cudaMalloc(&d_in, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMalloc(&d_in_pos, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMalloc(&d_preds, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMalloc(&d_scan, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMalloc(&d_out, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMalloc(&d_out_pos, sizeof(unsigned int) * NUM_VALUES));   
+    checkCudaErrors(cudaMalloc(&d_histo, sizeof(unsigned int) * sizeof(unsigned int)));
+
+    checkCudaErrors(cudaMemcpy(d_in, h_in, sizeof(unsigned int) * NUM_VALUES, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_in_pos, h_in_pos, sizeof(unsigned int) * NUM_VALUES, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_preds, h_preds, sizeof(unsigned int) * NUM_VALUES, cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(d_scan, h_scan, sizeof(unsigned int) * NUM_VALUES, cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMemset(d_out, 0, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMemset(d_out_pos, 0, sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMemset(d_histo, 0, sizeof(unsigned int) * sizeof(unsigned int)));
+
+    scatterWithOffsetIfPred<<<NUM_BLOCKS, NUM_THREADS>>>(d_histo, 0x0, true, d_preds, d_scan, d_in, d_in_pos, d_out, d_out_pos, NUM_VALUES);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    unsigned int* h_out = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * NUM_VALUES));
+    unsigned int* h_out_pos = static_cast<unsigned int*>(malloc(sizeof(unsigned int) * NUM_VALUES));
+    checkCudaErrors(cudaMemcpy(h_out, d_out, sizeof(unsigned int) * NUM_VALUES, cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(h_out_pos, d_out_pos, sizeof(unsigned int) * NUM_VALUES, cudaMemcpyDeviceToHost));
+    bool failure = false;
+    for (int i = 0; i < NUM_VALUES; i++) {
+        if (h_out[i] != NUM_VALUES - i - 1) {
+            failure = false;
+            printf("Test: scatterWithOffsetIfPred: h_out: Mismatched at index %d: want %d, got %d\n", i, NUM_VALUES-i-1, h_out[i]);
+            break;
+        }
+        if (h_out_pos[i] != NUM_VALUES - i - 1) {
+            failure = false;
+            printf("Test: scatterWithOffsetIfPred: h_out_pos: Mismatched at index %d: want %d, got %d\n", i, NUM_VALUES - i - 1, h_out_pos[i]);
+            break;
+        }
+    }
+    printf("Test: test_scatter: Result: %s!\n", (failure ? "FAILED" : "PASSED"));
 }
 
 void your_sort(unsigned int* const d_inputVals,
@@ -370,14 +435,14 @@ void your_sort(unsigned int* const d_inputVals,
  
     test_exclusiveScan();
     test_predicateKernel();
-    // return;  // FIXME
+    test_scatter();    
+    test_histogram(d_inputVals, numElems);
+    // return; // FIXME
 
     const int NUM_THREADS = 1024;    
     const int NUM_BLOCKS = numElems / NUM_THREADS + 1;
     dim3 block(NUM_THREADS);
-    dim3 grid(NUM_BLOCKS);
-
-    compute_host_reference(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems);
+    dim3 grid(NUM_BLOCKS);    
 
     // Histogram counts the number of zeros in each bit position.
     unsigned int num_bits = sizeof(unsigned int) * 8;
@@ -387,13 +452,13 @@ void your_sort(unsigned int* const d_inputVals,
     countZerosByPositions << <block, grid, sizeof(unsigned int) * num_bits >> > (d_inputVals, numElems, d_histo, num_bits);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-    //unsigned int* h_histo = static_cast<unsigned int *>(malloc(sizeof(unsigned int) * num_bits));
-    //checkCudaErrors(cudaMemcpy(h_histo, d_histo, sizeof(unsigned int) * num_bits, cudaMemcpyDeviceToHost));
-    //printf("Device: histo [ \n");
-    //for (int i = 0; i < num_bits; i++) {
-    //    printf("[%d] = %d; \n", i, h_histo[i]);
-    //}
-    //printf("\n");
+    unsigned int* h_histo = static_cast<unsigned int *>(malloc(sizeof(unsigned int) * num_bits));
+    checkCudaErrors(cudaMemcpy(h_histo, d_histo, sizeof(unsigned int) * num_bits, cudaMemcpyDeviceToHost));
+    printf("Device: histo [ \n");
+    for (int i = 0; i < num_bits; i++) {
+        printf("[%d] = %d; \n", i, h_histo[i]);
+    }
+    printf("\n");
 
     unsigned int* d_preds, *d_scan, *d_interim;
     checkCudaErrors(cudaMalloc(&d_preds, sizeof(unsigned int) * numElems));
@@ -408,12 +473,16 @@ void your_sort(unsigned int* const d_inputVals,
     unsigned int* d_po_pos = d_outputPos;
 
     for (unsigned int mask = 0x1, bitpos=0; mask != 0; mask <<= 1, bitpos++) {
+        printf("Main algorithm: Starting step for bitpos %d\n", bitpos);
+
+        printf("Main algorithm : Zero step\n");
         // Perform predicate operations for value 0 at bitpos.
         predicateKernel << <grid, block >> > (0x0, mask, d_pi_val, d_preds, numElems);
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
         // Perform scan: Local prefix sum + global prefix sum + block-wide adds.
         checkCudaErrors(cudaMemcpy(d_scan, d_preds, sizeof(unsigned int) * numElems, cudaMemcpyDeviceToDevice));
+        checkCudaErrors(cudaMemset(d_interim, 0, sizeof(unsigned int) * NUM_BLOCKS));
         exclusivePrefixSum << <grid, block>> > (d_scan, numElems, d_interim);
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
         exclusivePrefixSum << <1, NUM_BLOCKS>> > (d_interim, NUM_BLOCKS, nullptr);
@@ -425,12 +494,14 @@ void your_sort(unsigned int* const d_inputVals,
         scatterWithOffsetIfPred << <grid, block>> > (d_histo, bitpos, false, d_preds, d_scan, d_pi_val, d_pi_pos, d_po_val, d_po_pos, numElems);
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
+        printf("Main algorithm : Ones step\n");
         // Perform predicate operations for value 1 at bitpos.
         predicateKernel << <grid, block >> > (mask, mask, d_pi_val, d_preds, numElems);
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
         // Perform scan: Local prefix sum + global prefix sum + block-wide adds.
         checkCudaErrors(cudaMemcpy(d_scan, d_preds, sizeof(unsigned int) * numElems, cudaMemcpyDeviceToDevice));
+        checkCudaErrors(cudaMemset(d_interim, 0, sizeof(unsigned int) * NUM_BLOCKS));
         exclusivePrefixSum << <grid, block >> > (d_scan, numElems, d_interim);
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
         exclusivePrefixSum << <1, NUM_BLOCKS >> > (d_interim, NUM_BLOCKS, nullptr);
