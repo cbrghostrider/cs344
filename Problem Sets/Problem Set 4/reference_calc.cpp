@@ -32,6 +32,7 @@ void reference_calculation(unsigned int* inputVals,
       unsigned int bin = (vals_src[j] & mask) >> i;
       binHistogram[bin]++;
     }
+    // printf("Host [%d] = %d; \n", i, binHistogram[0]);
 
     //perform exclusive prefix sum (scan) on binHistogram to get starting
     //location for each bin
